@@ -1,0 +1,11 @@
+# Device firmware and build products are not distributable source.
+fw-*/
+uefi/files/Binaries/riva/*
+!uefi/files/Binaries/riva/.gitkeep
+prebuilt/
+build/
+*.fd
+*.elf
+*.bin
+*.img
+*.dtb
