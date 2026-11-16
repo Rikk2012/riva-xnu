@@ -1,0 +1,3 @@
+# Intentionally empty.
+# Populate only from the exact riva DTB after checking each property and reserved-memory node.
+# Never copy soc.args from redwood/SM7325: MSM8917 is a different SoC generation.
