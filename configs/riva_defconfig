@@ -1,0 +1,5 @@
+# HakiOS defconfig for Xiaomi Redmi 5A (riva, MSM8917).
+# Common baseline + MSM8917 SoC facts + riva-specific safe bring-up configuration.
+#include common_defconfig
+#include msm8917.config
+#include riva.config
