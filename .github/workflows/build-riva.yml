@@ -42,14 +42,16 @@ jobs:
             nasm cpio libssl-dev libelf-dev zlib1g-dev \
             libncurses-dev bc rsync device-tree-compiler
 
-      - name: Install Theos Linux toolchain
+      - name: Install Theos and its Linux toolchain
         run: |
-          CI=1 THEOS="$THEOS" bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          mkdir -p "$THEOS/sdks-git" "$THEOS/sdks"
-          if [ ! -d "$THEOS/sdks-git/.git" ]; then
-            git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks-git"
-            git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
-          fi
+          git clone --depth=1 --recurse-submodules https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain" "$THEOS/sdks-git" "$THEOS/sdks"
+          curl -fL --retry 3 \
+            https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz \
+            -o "$RUNNER_TEMP/ios-toolchain.tar.xz"
+          tar -xJf "$RUNNER_TEMP/ios-toolchain.tar.xz" -C "$THEOS/toolchain"
+          git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks-git"
+          git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
           ln -sfn "$THEOS/sdks-git/iPhoneOS16.5.sdk" "$THEOS/sdks/iPhoneOS16.5.sdk"
           test -x "$THEOS/toolchain/linux/iphone/bin/ld"
           test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
