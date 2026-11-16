@@ -73,8 +73,8 @@ jobs:
         working-directory: hakios
         run: |
           make riva_defconfig DEVICE=riva
-          make config
           tools/hakios-config.py check
+          tools/hakios-device.py check riva
 
       - name: Build XNU kernel
         working-directory: hakios
