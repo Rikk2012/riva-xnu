@@ -23,7 +23,9 @@ jobs:
   kernel:
     name: XNU kernel (experimental riva config)
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
+    env:
+      THEOS: ${{ runner.temp }}/theos
     steps:
       - name: Checkout riva device repository
         uses: actions/checkout@v4
@@ -36,9 +38,21 @@ jobs:
           sudo apt-get install -y \
             build-essential clang llvm lld lldb \
             git curl wget python3 python3-venv python3-pip \
-            flex bison gawk m4 nasm cpio \
-            libssl-dev libelf-dev zlib1g-dev libncurses-dev \
-            bc rsync device-tree-compiler
+            flex bison gawk m4 perl autoconf automake \
+            nasm cpio libssl-dev libelf-dev zlib1g-dev \
+            libncurses-dev bc rsync device-tree-compiler
+
+      - name: Install Theos Linux toolchain
+        run: |
+          CI=1 THEOS="$THEOS" bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          mkdir -p "$THEOS/sdks-git" "$THEOS/sdks"
+          if [ ! -d "$THEOS/sdks-git/.git" ]; then
+            git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks-git"
+            git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
+          fi
+          ln -sfn "$THEOS/sdks-git/iPhoneOS16.5.sdk" "$THEOS/sdks/iPhoneOS16.5.sdk"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
 
       - name: Checkout upstream HakiOS common tree
         run: |
@@ -53,16 +67,12 @@ jobs:
           ./xnu/apply.sh
           ./xnu-deps/setup.sh
 
-      - name: Generate riva configuration
+      - name: Generate and validate riva configuration
         working-directory: hakios
         run: |
-          cat > configs/riva_defconfig <<'EOF'
-          #include "configs/defconfig"
-          #include "devices/riva/soc/configs/msm8917.config"
-          #include "devices/riva/configs/riva.config"
-          EOF
-          make riva_defconfig
+          make riva_defconfig DEVICE=riva
           make config
+          tools/hakios-config.py check
 
       - name: Build XNU kernel
         working-directory: hakios
@@ -72,7 +82,7 @@ jobs:
           source ./xnu-env.sh
           make kernel DEVICE=riva JOBS="$JOBS"
 
-      - name: Upload kernel build outputs and logs
+      - name: Upload kernel outputs and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -85,7 +95,7 @@ jobs:
             hakios/.config
 
   uefi:
-    name: Mu-Silicium UEFI (requires device-owned XBL drivers)
+    name: Mu-Silicium UEFI (requires a real riva platform and XBL payload)
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -94,30 +104,35 @@ jobs:
         with:
           path: riva-device
 
-      - name: Check whether local vendor driver payload is present
+      - name: Check required platform and vendor files
         id: payload
         shell: bash
         run: |
-          if find riva-device/uefi/files/Binaries/riva -type f -print -quit 2>/dev/null | grep -q .; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
+          if test -f riva-device/uefi/files/Platforms/Xiaomi/rivaPkg/rivaPkg.dsc \
+             && find riva-device/uefi/files/Binaries/riva -type f -print -quit 2>/dev/null | grep -q .; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "No riva XBL driver payload found. UEFI build is intentionally skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::UEFI skipped: rivaPkg.dsc and device-owned XBL driver payload are not both present."
           fi
 
-      - name: Checkout upstream HakiOS common tree
-        if: steps.payload.outputs.present == 'true'
+      - name: Install UEFI build dependencies
+        if: steps.payload.outputs.ready == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y git curl wget python3 python3-venv python3-pip \
             build-essential clang llvm lld nasm mono-complete
+
+      - name: Checkout HakiOS and overlay riva device
+        if: steps.payload.outputs.ready == 'true'
+        run: |
           git clone --depth=1 --recurse-submodules \
             https://github.com/oosexgang/hakios-xnu-kernel.git hakios
           mkdir -p hakios/devices/riva
           cp -a riva-device/. hakios/devices/riva/
 
-      - name: Apply HakiOS UEFI and riva platform
-        if: steps.payload.outputs.present == 'true'
+      - name: Apply Mu-Silicium and riva platform
+        if: steps.payload.outputs.ready == 'true'
         working-directory: hakios
         run: |
           ./uefi/apply.sh riva
@@ -125,7 +140,7 @@ jobs:
           venv/bin/pip install -r Mu-Silicium/pip-requirements.txt
 
       - name: Build Mu-Silicium UEFI
-        if: steps.payload.outputs.present == 'true'
+        if: steps.payload.outputs.ready == 'true'
         working-directory: hakios
         run: |
           source venv/bin/activate
@@ -133,14 +148,9 @@ jobs:
           python3 build_uefi.py -d riva -r RELEASE
 
       - name: Upload UEFI image
-        if: steps.payload.outputs.present == 'true'
+        if: steps.payload.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: riva-silicium-uefi
           if-no-files-found: error
           path: hakios/Mu-Silicium/Build/rivaPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
-
-      - name: Explain skipped UEFI build
-        if: steps.payload.outputs.present != 'true'
-        run: |
-          echo "::notice::UEFI build skipped: supply the matching Redmi 5A XBL-extracted files under uefi/files/Binaries/riva and implement the rivaPkg platform first."
