@@ -1,0 +1,146 @@
+name: Build HakiOS for Redmi 5A (riva)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '**'
+      - '.github/workflows/build-riva.yml'
+  pull_request:
+    paths:
+      - '**'
+      - '.github/workflows/build-riva.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-riva-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    name: XNU kernel (experimental riva config)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout riva device repository
+        uses: actions/checkout@v4
+        with:
+          path: riva-device
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang llvm lld lldb \
+            git curl wget python3 python3-venv python3-pip \
+            flex bison gawk m4 nasm cpio \
+            libssl-dev libelf-dev zlib1g-dev libncurses-dev \
+            bc rsync device-tree-compiler
+
+      - name: Checkout upstream HakiOS common tree
+        run: |
+          git clone --depth=1 --recurse-submodules \
+            https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+          mkdir -p hakios/devices/riva
+          cp -a riva-device/. hakios/devices/riva/
+
+      - name: Prepare XNU and dependencies
+        working-directory: hakios
+        run: |
+          ./xnu/apply.sh
+          ./xnu-deps/setup.sh
+
+      - name: Generate riva configuration
+        working-directory: hakios
+        run: |
+          cat > configs/riva_defconfig <<'EOF'
+          #include "configs/defconfig"
+          #include "devices/riva/soc/configs/msm8917.config"
+          #include "devices/riva/configs/riva.config"
+          EOF
+          make riva_defconfig
+          make config
+
+      - name: Build XNU kernel
+        working-directory: hakios
+        env:
+          JOBS: 2
+        run: |
+          source ./xnu-env.sh
+          make kernel DEVICE=riva JOBS="$JOBS"
+
+      - name: Upload kernel build outputs and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: riva-xnu-build
+          if-no-files-found: warn
+          path: |
+            hakios/xnu-src/**/BUILD/obj/**/mach*
+            hakios/xnu-src/**/BUILD/obj/**/kernel*
+            hakios/logs/**
+            hakios/.config
+
+  uefi:
+    name: Mu-Silicium UEFI (requires device-owned XBL drivers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout riva device repository
+        uses: actions/checkout@v4
+        with:
+          path: riva-device
+
+      - name: Check whether local vendor driver payload is present
+        id: payload
+        shell: bash
+        run: |
+          if find riva-device/uefi/files/Binaries/riva -type f -print -quit 2>/dev/null | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No riva XBL driver payload found. UEFI build is intentionally skipped."
+          fi
+
+      - name: Checkout upstream HakiOS common tree
+        if: steps.payload.outputs.present == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl wget python3 python3-venv python3-pip \
+            build-essential clang llvm lld nasm mono-complete
+          git clone --depth=1 --recurse-submodules \
+            https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+          mkdir -p hakios/devices/riva
+          cp -a riva-device/. hakios/devices/riva/
+
+      - name: Apply HakiOS UEFI and riva platform
+        if: steps.payload.outputs.present == 'true'
+        working-directory: hakios
+        run: |
+          ./uefi/apply.sh riva
+          python3 -m venv venv
+          venv/bin/pip install -r Mu-Silicium/pip-requirements.txt
+
+      - name: Build Mu-Silicium UEFI
+        if: steps.payload.outputs.present == 'true'
+        working-directory: hakios
+        run: |
+          source venv/bin/activate
+          cd Mu-Silicium
+          python3 build_uefi.py -d riva -r RELEASE
+
+      - name: Upload UEFI image
+        if: steps.payload.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: riva-silicium-uefi
+          if-no-files-found: error
+          path: hakios/Mu-Silicium/Build/rivaPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd
+
+      - name: Explain skipped UEFI build
+        if: steps.payload.outputs.present != 'true'
+        run: |
+          echo "::notice::UEFI build skipped: supply the matching Redmi 5A XBL-extracted files under uefi/files/Binaries/riva and implement the rivaPkg platform first."
